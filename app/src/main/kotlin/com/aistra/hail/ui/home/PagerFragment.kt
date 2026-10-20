@@ -413,6 +413,20 @@ class PagerFragment : MainFragment(), PagerAdapter.OnItemClickListener, PagerAda
         if (AppManager.isAppFrozen(packageName) && AppManager.setAppFrozen(packageName, false)) {
             updateCurrentList()
         }
+        val userId = HPackages.userIdOf(packageName)
+        if (userId != HPackages.myUserId) {
+            val component = app.packageManager.getLaunchIntentForPackage(HPackages.pkgOf(packageName))
+                ?.component?.flattenToShortString()
+            if (component == null) {
+                HUI.showToast(R.string.activity_not_found)
+                return
+            }
+            lifecycleScope.launch {
+                val result = AppManager.execute("am start --user $userId -n $component")
+                if (result.first != 0) HUI.showToast(R.string.activity_not_found)
+            }
+            return
+        }
         if (HailData.workingMode == HailData.MODE_ISLAND_HIDE) {
             HIsland.ensureLaunchIntentExists(packageName)
         }
@@ -536,8 +550,9 @@ class PagerFragment : MainFragment(), PagerAdapter.OnItemClickListener, PagerAda
     }
 
     private suspend fun importFrozenApp() = withContext(Dispatchers.IO) {
-        HPackages.getInstalledApplications().map { it.packageName }
-            .filter { AppManager.isAppFrozen(it) && !HailData.isChecked(it) }
+        (HPackages.getInstalledApplications().map { it.packageName }
+            .filter { AppManager.isAppFrozen(it) } + HPackages.getCloneKeys())
+            .filter { !HailData.isChecked(it) }
             .onEach { HailData.addCheckedApp(it, tag?.second ?: 0, false) }.size
     }
 
