@@ -1,0 +1,51 @@
+name: Cleanup
+
+on:
+  push:
+    branches:
+      - refactor
+    paths:
+      - '.github/workflows/cleanup.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Remove unused files
+        run: |
+          B=app/src/main/kotlin/com/aistra/hail
+          git rm -r -q --ignore-unmatch \
+            $B/app/DirtyDataUpdater.kt \
+            $B/app/HailApi.kt \
+            $B/receiver \
+            $B/services \
+            $B/ui/about \
+            $B/ui/api \
+            $B/ui/settings \
+            $B/ui/theme \
+            $B/work \
+            $B/xposed \
+            $B/utils/HDhizuku.kt \
+            $B/utils/HIsland.kt \
+            $B/utils/HPolicy.kt \
+            $B/utils/HShell.kt \
+            $B/utils/HShortcuts.kt \
+            $B/utils/IconPack.kt \
+            $B/utils/NineKeySearch.kt \
+            app/src/main/resources \
+            app/src/main/res/menu/menu_settings.xml \
+            app/src/main/res/xml/device_admin.xml \
+            app/src/main/res/raw/licenses \
+            app/src/main/res/mipmap-xhdpi/qr_wechat.png
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git diff --cached --quiet || git commit -m "chore: remove unused files"
+          git push
