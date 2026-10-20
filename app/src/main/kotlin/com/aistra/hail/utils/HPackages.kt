@@ -8,17 +8,40 @@ import android.os.Build
 import androidx.annotation.RequiresApi
 import androidx.core.content.getSystemService
 import com.aistra.hail.HailApp.Companion.app
+import com.aistra.hail.app.HailData
 import org.lsposed.hiddenapibypass.HiddenApiBypass
 
 object HPackages {
     val myUserId get() = android.os.Process.myUserHandle().hashCode()
 
-    fun packageUri(packageName: String) = "package:$packageName"
+    // 分身应用用 "包名#用户ID" 作为唯一标识 其余代码按包名处理即可无需改动
+    private const val CLONE_SEP = '#'
+    val cloneUserIds = 999 downTo 995
+
+    fun userIdOf(key: String): Int = key.substringAfter(CLONE_SEP, "").toIntOrNull() ?: myUserId
+    fun pkgOf(key: String): String = key.substringBefore(CLONE_SEP)
+    fun cloneKey(packageName: String, userId: Int): String =
+        if (userId == myUserId) packageName else "$packageName$CLONE_SEP$userId"
+
+    fun getCloneKeys(): List<String> {
+        if (!HailData.workingMode.startsWith(HailData.SHIZUKU)) return emptyList()
+        return cloneUserIds.flatMap { userId ->
+            HShizuku.getInstalledApplicationsAsUser(userId)
+                .filter { it.flags and ApplicationInfo.FLAG_SYSTEM == 0 }
+                .map { cloneKey(it.packageName, userId) }
+        }
+    }
+
+    fun packageUri(packageName: String) = "package:${pkgOf(packageName)}"
 
     @RequiresApi(Build.VERSION_CODES.N)
-    fun packageUid(packageName: String) = if (HTarget.T) app.packageManager.getPackageUid(
-        packageName, PackageManager.PackageInfoFlags.of(PackageManager.MATCH_UNINSTALLED_PACKAGES.toLong())
-    ) else app.packageManager.getPackageUid(packageName, PackageManager.MATCH_UNINSTALLED_PACKAGES)
+    fun packageUid(packageName: String): Int {
+        val pkg = pkgOf(packageName)
+        val uid = if (HTarget.T) app.packageManager.getPackageUid(
+            pkg, PackageManager.PackageInfoFlags.of(PackageManager.MATCH_UNINSTALLED_PACKAGES.toLong())
+        ) else app.packageManager.getPackageUid(pkg, PackageManager.MATCH_UNINSTALLED_PACKAGES)
+        return userIdOf(packageName) * 100000 + uid % 100000
+    }
 
     fun getInstalledApplications(flags: Int = if (HTarget.N) PackageManager.MATCH_UNINSTALLED_PACKAGES else 8192): List<ApplicationInfo> =
         if (HTarget.T) app.packageManager.getInstalledApplications(
@@ -29,20 +52,25 @@ object HPackages {
     fun getUnhiddenPackageInfoOrNull(
         packageName: String, flags: Int = if (HTarget.N) PackageManager.MATCH_UNINSTALLED_PACKAGES else 8192
     ) = runCatching {
+        val pkg = pkgOf(packageName)
         if (HTarget.T) app.packageManager.getPackageInfo(
-            packageName, PackageManager.PackageInfoFlags.of(flags.toLong())
+            pkg, PackageManager.PackageInfoFlags.of(flags.toLong())
         )
-        else app.packageManager.getPackageInfo(packageName, flags)
+        else app.packageManager.getPackageInfo(pkg, flags)
     }.getOrNull()
 
     fun getApplicationInfoOrNull(
         packageName: String, flags: Int = if (HTarget.N) PackageManager.MATCH_UNINSTALLED_PACKAGES else 8192
-    ) = runCatching {
-        if (HTarget.T) app.packageManager.getApplicationInfo(
-            packageName, PackageManager.ApplicationInfoFlags.of(flags.toLong())
-        )
-        else app.packageManager.getApplicationInfo(packageName, flags)
-    }.getOrNull()
+    ): ApplicationInfo? {
+        val userId = userIdOf(packageName)
+        if (userId != myUserId) return HShizuku.getApplicationInfoAsUser(pkgOf(packageName), flags, userId)
+        return runCatching {
+            if (HTarget.T) app.packageManager.getApplicationInfo(
+                packageName, PackageManager.ApplicationInfoFlags.of(flags.toLong())
+            )
+            else app.packageManager.getApplicationInfo(packageName, flags)
+        }.getOrNull()
+    }
 
     fun isAppDisabled(packageName: String): Boolean = getApplicationInfoOrNull(packageName)?.enabled?.not() ?: false
 
