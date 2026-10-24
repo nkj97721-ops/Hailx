@@ -19,7 +19,8 @@ data class Entry(
     val order: Int,
     val name: String,
     val frozen: Boolean,
-    val pinned: Boolean
+    val pinned: Boolean,
+    val whitelisted: Boolean
 )
 
 object Repo {
@@ -40,26 +41,39 @@ object Repo {
     val myUserId: Int get() = android.os.Process.myUserHandle().hashCode()
 
     private fun sortKeyOf(label: String): String =
-        transliterator?.let { t -> runCatching { t.transliterate(label) }.getOrNull() }
-            ?: label.lowercase()
+        (transliterator?.let { t -> runCatching { t.transliterate(label) }.getOrNull() }
+            ?: label.lowercase()).replace(" ", "")
 
     private fun compareKeys(a: String, b: String): Int =
         if (transliterator != null) a.compareTo(b) else collator.compare(a, b)
 
     private fun pins(): Set<String> = prefs.getStringSet("pins", emptySet()) ?: emptySet()
+    private fun whites(): Set<String> = prefs.getStringSet("whites", emptySet()) ?: emptySet()
 
-    /** 返回 true 表示现在是置顶状态 */
+    /** 长按：置顶 / 取消置顶 返回 true 表示现在是置顶 */
     fun togglePin(key: String): Boolean {
         val set = pins().toMutableSet()
-        val pinned = set.add(key)
-        if (!pinned) set.remove(key)
+        val added = set.add(key)
+        if (!added) set.remove(key)
         prefs.edit().putStringSet("pins", set).apply()
-        return pinned
+        return added
+    }
+
+    /** 右滑：加入 / 移出白名单 返回 true 表示现在在白名单里 */
+    fun toggleWhite(key: String): Boolean {
+        val set = whites().toMutableSet()
+        val added = set.add(key)
+        if (!added) set.remove(key)
+        prefs.edit().putStringSet("whites", set).apply()
+        return added
     }
 
     fun withPins(list: List<Entry>): List<Entry> {
         val pins = pins()
-        return list.map { it.copy(pinned = it.key in pins) }.sortedWith(
+        val whites = whites()
+        return list.map {
+            it.copy(pinned = it.key in pins, whitelisted = it.key in whites)
+        }.sortedWith(
             compareByDescending<Entry> { it.pinned }
                 .thenComparator { a, b -> compareKeys(a.sortKey, b.sortKey) }
                 .thenBy { it.order }
@@ -92,7 +106,7 @@ object Repo {
             out += Entry(
                 key = info.packageName, pkg = info.packageName, userId = me,
                 sortKey = sortKeyOf(label), order = 0, name = label,
-                frozen = !info.enabled, pinned = false
+                frozen = !info.enabled, pinned = false, whitelisted = false
             )
         }
         if (HShizuku.isAlive && HShizuku.isGranted) {
@@ -104,7 +118,7 @@ object Repo {
                     out += Entry(
                         key = "${info.packageName}#$uid", pkg = info.packageName, userId = uid,
                         sortKey = sortKeyOf(label), order = n, name = "$n $label",
-                        frozen = !info.enabled, pinned = false
+                        frozen = !info.enabled, pinned = false, whitelisted = false
                     )
                 }
             }
@@ -112,11 +126,11 @@ object Repo {
         withPins(out)
     }
 
-    /** 一键冻结：跳过置顶的应用 返回成功数量 */
+    /** 一键冻结：跳过白名单的应用 返回成功数量 */
     suspend fun freezeAll(list: List<Entry>): Int = withContext(Dispatchers.IO) {
         var n = 0
         for (e in list) {
-            if (!e.frozen && !e.pinned && HShizuku.setDisabled(e.pkg, e.userId, true)) n++
+            if (!e.frozen && !e.whitelisted && HShizuku.setDisabled(e.pkg, e.userId, true)) n++
         }
         n
     }

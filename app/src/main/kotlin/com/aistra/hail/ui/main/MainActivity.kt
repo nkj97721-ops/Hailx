@@ -11,12 +11,15 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.SearchView
 import androidx.core.view.MenuItemCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
@@ -34,7 +37,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var refresh: SwipeRefreshLayout
     private val adapter = EntryAdapter({ onTap(it) }, { onLongTap(it) })
     private var entries: List<Entry> = emptyList()
+    private var query = ""
     private var busy = false
+    private var searchItem: MenuItem? = null
 
     private val permissionListener = Shizuku.OnRequestPermissionResultListener { _, result ->
         if (result == PackageManager.PERMISSION_GRANTED) runOnUiThread { reload() }
@@ -47,8 +52,28 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** 右滑：加入 / 移出白名单 */
+    private val swipeHelper = ItemTouchHelper(object : ItemTouchHelper.SimpleCallback(
+        0, ItemTouchHelper.RIGHT
+    ) {
+        override fun onMove(
+            recyclerView: RecyclerView,
+            viewHolder: RecyclerView.ViewHolder,
+            target: RecyclerView.ViewHolder
+        ) = false
+
+        override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
+            val pos = viewHolder.bindingAdapterPosition
+            if (pos == RecyclerView.NO_POSITION) return
+            val e = adapter.currentList.getOrNull(pos)
+            adapter.notifyItemChanged(pos)
+            if (e != null) onSwipe(e)
+        }
+    })
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
             val bars = insets.getInsets(
@@ -59,16 +84,43 @@ class MainActivity : AppCompatActivity() {
         }
 
         val toolbar = MaterialToolbar(this).apply { title = "雹" }
-        val freezeItem = toolbar.menu.add(0, 1, 0, "一键冻结").setIcon(R.drawable.ic_round_frozen)
-        freezeItem.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
-        MenuItemCompat.setIconTintList(
-            freezeItem,
-            ColorStateList.valueOf(
-                MaterialColors.getColor(toolbar, com.google.android.material.R.attr.colorOnSurface)
-            )
+        val tint = ColorStateList.valueOf(
+            MaterialColors.getColor(toolbar, com.google.android.material.R.attr.colorOnSurface)
         )
+
+        val search = toolbar.menu.add(0, 2, 0, "搜索").setIcon(android.R.drawable.ic_menu_search)
+        search.setShowAsAction(
+            MenuItem.SHOW_AS_ACTION_ALWAYS or MenuItem.SHOW_AS_ACTION_COLLAPSE_ACTION_VIEW
+        )
+        MenuItemCompat.setIconTintList(search, tint)
+        val searchView = SearchView(toolbar.context).apply {
+            queryHint = "搜索应用"
+            maxWidth = Int.MAX_VALUE
+            setOnQueryTextListener(object : SearchView.OnQueryTextListener {
+                override fun onQueryTextSubmit(q: String?): Boolean = false
+                override fun onQueryTextChange(q: String?): Boolean {
+                    query = q.orEmpty()
+                    render()
+                    return true
+                }
+            })
+        }
+        search.actionView = searchView
+        search.setOnActionExpandListener(object : MenuItem.OnActionExpandListener {
+            override fun onMenuItemActionExpand(item: MenuItem): Boolean = true
+            override fun onMenuItemActionCollapse(item: MenuItem): Boolean {
+                query = ""
+                render()
+                return true
+            }
+        })
+        searchItem = search
+
+        val freeze = toolbar.menu.add(0, 1, 1, "一键冻结").setIcon(R.drawable.ic_round_frozen)
+        freeze.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
+        MenuItemCompat.setIconTintList(freeze, tint)
         toolbar.setOnMenuItemClickListener {
-            freezeAll()
+            if (it.itemId == 1) freezeAll()
             true
         }
 
@@ -77,8 +129,12 @@ class MainActivity : AppCompatActivity() {
             adapter = this@MainActivity.adapter
             clipToPadding = false
         }
+        swipeHelper.attachToRecyclerView(list)
         refresh = SwipeRefreshLayout(this).apply {
-            addView(list, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(
+                list,
+                ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            )
             setOnRefreshListener { reload() }
         }
 
@@ -88,6 +144,18 @@ class MainActivity : AppCompatActivity() {
         )
         root.addView(refresh, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         setContentView(root)
+
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                val item = searchItem
+                if (item != null && item.isActionViewExpanded) {
+                    item.collapseActionView()
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
+            }
+        })
 
         Shizuku.addRequestPermissionResultListener(permissionListener)
         Shizuku.addBinderReceivedListenerSticky(binderListener)
@@ -125,6 +193,22 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
+    /** 搜索：名称 包名 拼音 */
+    private fun shown(): List<Entry> {
+        val q = query.trim()
+        if (q.isEmpty()) return entries
+        val compact = q.replace(" ", "")
+        return entries.filter {
+            it.name.contains(q, ignoreCase = true) ||
+                    it.pkg.contains(q, ignoreCase = true) ||
+                    it.sortKey.contains(compact, ignoreCase = true)
+        }
+    }
+
+    private fun render() {
+        adapter.submitList(shown())
+    }
+
     private fun reload() {
         if (busy) return
         busy = true
@@ -132,7 +216,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 entries = Repo.load()
-                adapter.submitList(entries)
+                render()
             } finally {
                 refresh.isRefreshing = false
                 busy = false
@@ -168,11 +252,19 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun onLongTap(e: Entry) {
-        val pinned = Repo.togglePin(e.key)
+    private fun onSwipe(e: Entry) {
+        val on = Repo.toggleWhite(e.key)
         entries = Repo.withPins(entries)
-        adapter.submitList(entries)
-        toast(if (pinned) "已置顶" else "已取消置顶")
+        render()
+        toast(if (on) "已加入白名单" else "已移出白名单")
+    }
+
+    /** 长按：置顶 / 取消置顶 */
+    private fun onLongTap(e: Entry) {
+        val on = Repo.togglePin(e.key)
+        entries = Repo.withPins(entries)
+        render()
+        toast(if (on) "已置顶" else "已取消置顶")
     }
 }
 
@@ -211,7 +303,8 @@ private class EntryAdapter(
 
     override fun onBindViewHolder(holder: VH, position: Int) {
         val e = getItem(position)
-        holder.label.text = if (e.pinned) "★ ${e.name}" else e.name
+        val mark = (if (e.pinned) "★ " else "") + (if (e.whitelisted) "🔒 " else "")
+        holder.label.text = mark + e.name
         holder.label.alpha = if (e.frozen) 0.4f else 1f
         holder.label.setOnClickListener {
             val p = holder.bindingAdapterPosition
