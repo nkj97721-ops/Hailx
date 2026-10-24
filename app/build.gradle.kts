@@ -52,7 +52,6 @@ android {
         localeFilters += listOf("en", "zh-rCN")
     }
     buildFeatures {
-        viewBinding = true
         buildConfig = true
     }
     dependenciesInfo {
@@ -79,20 +78,14 @@ kotlin {
 
 dependencies {
     implementation(libs.androidx.appcompat)
-    implementation(libs.androidx.constraintlayout)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.livedata.ktx)
     implementation(libs.androidx.navigation.fragment.ktx)
-    implementation(libs.androidx.navigation.ui.ktx)
-    implementation(libs.androidx.preference.ktx)
     implementation(libs.androidx.swiperefreshlayout)
-    implementation(libs.pinyin4j)
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation(libs.material)
-    implementation(libs.insetter)
     implementation(libs.shizuku.api)
     implementation(libs.shizuku.provider)
-    implementation(libs.appiconloader)
-    implementation(libs.commons.text)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.hiddenapibypass)
 }

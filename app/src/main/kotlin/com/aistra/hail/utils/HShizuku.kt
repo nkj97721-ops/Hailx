@@ -1,17 +1,12 @@
 package com.aistra.hail.utils
 
-import android.annotation.SuppressLint
-import android.app.AppOpsManager
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
-import android.os.SystemClock
-import android.view.InputEvent
-import android.view.KeyEvent
-import androidx.annotation.RequiresApi
+import android.util.Log
 import com.aistra.hail.BuildConfig
 import moe.shizuku.server.IShizukuService
 import org.lsposed.hiddenapibypass.HiddenApiBypass
@@ -20,84 +15,66 @@ import rikka.shizuku.ShizukuBinderWrapper
 import rikka.shizuku.SystemServiceHelper
 
 object HShizuku {
-    val isRoot get() = Shizuku.getUid() == 0
-    private val callerPackage get() = if (isRoot) BuildConfig.APPLICATION_ID else "com.android.shell"
+    private const val TAG = "HShizuku"
+    private const val MATCH_UNINSTALLED = 0x2000
 
-    private fun asInterface(className: String, original: IBinder): Any = Class.forName("$className\$Stub").run {
-        if (HTarget.P) HiddenApiBypass.invoke(this, null, "asInterface", ShizukuBinderWrapper(original))
-        else getMethod("asInterface", IBinder::class.java).invoke(null, ShizukuBinderWrapper(original))
+    val isAlive: Boolean get() = runCatching { Shizuku.pingBinder() }.getOrDefault(false)
+
+    val isGranted: Boolean
+        get() = runCatching {
+            Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+        }.getOrDefault(false)
+
+    private val isRoot: Boolean get() = runCatching { Shizuku.getUid() == 0 }.getOrDefault(false)
+
+    private fun asInterface(className: String, original: IBinder): Any {
+        val stub = Class.forName("$className\$Stub")
+        val wrapped = ShizukuBinderWrapper(original)
+        val result: Any? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            HiddenApiBypass.invoke(stub, null, "asInterface", wrapped)
+        } else {
+            stub.getMethod("asInterface", IBinder::class.java).invoke(null, wrapped)
+        }
+        return result!!
     }
 
-    private fun asInterface(className: String, serviceName: String): Any =
+    private fun service(className: String, serviceName: String): Any =
         asInterface(className, SystemServiceHelper.getSystemService(serviceName))
 
-    private val ipm get() = asInterface("android.content.pm.IPackageManager", "package")
-
-    fun getApplicationInfoAsUser(packageName: String, flags: Int, userId: Int): ApplicationInfo? = runCatching {
-        val pm = ipm
-        // Android 13+ 的 flags 是 long 之前是 int
-        runCatching {
-            HiddenApiBypass.invoke(pm::class.java, pm, "getApplicationInfo", packageName, flags.toLong(), userId)
-        }.getOrElse {
-            HiddenApiBypass.invoke(pm::class.java, pm, "getApplicationInfo", packageName, flags, userId)
-        } as ApplicationInfo?
-    }.getOrNull()
-
+    /** 指定用户下已安装的应用（含分身用户） */
     @Suppress("UNCHECKED_CAST")
-    fun getInstalledApplicationsAsUser(userId: Int, flags: Int = 8192): List<ApplicationInfo> = runCatching {
-        val pm = ipm
+    fun installedApps(userId: Int): List<ApplicationInfo> = runCatching {
+        val pm = service("android.content.pm.IPackageManager", "package")
+        // Android 13+ 的 flags 是 long 之前是 int
         val slice = runCatching {
-            HiddenApiBypass.invoke(pm::class.java, pm, "getInstalledApplications", flags.toLong(), userId)
+            HiddenApiBypass.invoke(
+                pm::class.java, pm, "getInstalledApplications", MATCH_UNINSTALLED.toLong(), userId
+            )
         }.getOrElse {
-            HiddenApiBypass.invoke(pm::class.java, pm, "getInstalledApplications", flags, userId)
+            HiddenApiBypass.invoke(
+                pm::class.java, pm, "getInstalledApplications", MATCH_UNINSTALLED, userId
+            )
         }!!
-        HiddenApiBypass.invoke(slice::class.java, slice, "getList") as List<ApplicationInfo>
-    }.getOrElse { emptyList() }
+        val base = Class.forName("android.content.pm.BaseParceledListSlice")
+        HiddenApiBypass.invoke(base, slice, "getList") as List<ApplicationInfo>
+    }.getOrElse {
+        Log.e(TAG, "installedApps($userId)", it)
+        emptyList()
+    }
 
-    val lockScreen
-        get() = runCatching {
-            val input = asInterface("android.hardware.input.IInputManager", Context.INPUT_SERVICE)
-            val inject = input::class.java.getMethod(
-                "injectInputEvent", InputEvent::class.java, Int::class.java
-            )
-            val now = SystemClock.uptimeMillis()
-            inject.invoke(
-                input, KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_POWER, 0), 0
-            )
-            inject.invoke(
-                input, KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_POWER, 0), 0
-            )
-            true
-        }.getOrElse {
-            HLog.e(it)
-            false
-        }
-
-    fun forceStopApp(key: String): Boolean = runCatching {
-        val packageName = HPackages.pkgOf(key)
-        val userId = HPackages.userIdOf(key)
-        asInterface("android.app.IActivityManager", Context.ACTIVITY_SERVICE).let {
-            if (HTarget.P) HiddenApiBypass.invoke(
-                it::class.java, it, "forceStopPackage", packageName, userId
-            ) else it::class.java.getMethod(
-                "forceStopPackage", String::class.java, Int::class.java
-            ).invoke(
-                it, packageName, userId
-            )
-        }
+    fun forceStop(packageName: String, userId: Int): Boolean = runCatching {
+        val am = service("android.app.IActivityManager", Context.ACTIVITY_SERVICE)
+        HiddenApiBypass.invoke(am::class.java, am, "forceStopPackage", packageName, userId)
         true
     }.getOrElse {
-        HLog.e(it)
+        Log.e(TAG, "forceStop($packageName, $userId)", it)
         false
     }
 
-    fun setAppDisabled(key: String, disabled: Boolean): Boolean {
-        HPackages.getApplicationInfoOrNull(key) ?: return false
-        if (disabled) forceStopApp(key)
-        val packageName = HPackages.pkgOf(key)
-        val userId = HPackages.userIdOf(key)
-        runCatching {
-            val pm = asInterface("android.content.pm.IPackageManager", "package")
+    fun setDisabled(packageName: String, userId: Int, disabled: Boolean): Boolean {
+        if (disabled) forceStop(packageName, userId)
+        return runCatching {
+            val pm = service("android.content.pm.IPackageManager", "package")
             val newState = when {
                 !disabled -> PackageManager.COMPONENT_ENABLED_STATE_ENABLED
                 isRoot -> PackageManager.COMPONENT_ENABLED_STATE_DISABLED
@@ -111,151 +88,24 @@ object HShizuku {
                 Int::class.java,
                 String::class.java
             ).invoke(pm, packageName, newState, 0, userId, BuildConfig.APPLICATION_ID)
-        }.onFailure {
-            HLog.e(it)
-        }
-        return HPackages.isAppDisabled(key) == disabled
-    }
-
-    fun setAppHidden(key: String, hidden: Boolean): Boolean {
-        HPackages.getApplicationInfoOrNull(key) ?: return false
-        if (hidden) forceStopApp(key)
-        val packageName = HPackages.pkgOf(key)
-        val userId = HPackages.userIdOf(key)
-        return runCatching {
-            val pm = asInterface("android.content.pm.IPackageManager", "package")
-            pm::class.java.getMethod(
-                "setApplicationHiddenSettingAsUser", String::class.java, Boolean::class.java, Int::class.java
-            ).invoke(pm, packageName, hidden, userId) as Boolean
+            true
         }.getOrElse {
-            HLog.e(it)
+            Log.e(TAG, "setDisabled($packageName, $userId, $disabled)", it)
             false
         }
     }
 
-    fun setAppSuspended(key: String, suspended: Boolean): Boolean {
-        HPackages.getApplicationInfoOrNull(key) ?: return false
-        if (HTarget.P) setAppRestricted(key, suspended)
-        if (suspended) forceStopApp(key)
-        val packageName = HPackages.pkgOf(key)
-        val userId = HPackages.userIdOf(key)
-        return runCatching {
-            val pm = asInterface("android.content.pm.IPackageManager", "package")
-            (when {
-                HTarget.U -> runCatching {
-                    HiddenApiBypass.invoke(
-                        pm::class.java,
-                        pm,
-                        "setPackagesSuspendedAsUser",
-                        arrayOf(packageName),
-                        suspended,
-                        null,
-                        null,
-                        if (suspended) suspendDialogInfo else null,
-                        0,
-                        callerPackage,
-                        HPackages.myUserId /*suspendingUserId*/,
-                        userId /*targetUserId*/
-                    )
-                }.getOrElse {
-                    if (it is NoSuchMethodException) setPackagesSuspendedAsUserSinceQ(pm, packageName, suspended, userId)
-                    else throw it
-                }
-
-                HTarget.Q -> runCatching {
-                    setPackagesSuspendedAsUserSinceQ(pm, packageName, suspended, userId)
-                }.getOrElse {
-                    if (it is NoSuchMethodException) setPackagesSuspendedAsUserSinceP(pm, packageName, suspended, userId)
-                    else throw it
-                }
-
-                HTarget.P -> setPackagesSuspendedAsUserSinceP(pm, packageName, suspended, userId)
-
-                HTarget.N -> pm::class.java.getMethod(
-                    "setPackagesSuspendedAsUser", Array<String>::class.java, Boolean::class.java, Int::class.java
-                ).invoke(pm, arrayOf(packageName), suspended, userId)
-
-                else -> return false
-            } as Array<*>).isEmpty()
-        }.getOrElse {
-            HLog.e(it)
-            false
-        }
-    }
-
-    @RequiresApi(Build.VERSION_CODES.Q)
-    private fun setPackagesSuspendedAsUserSinceQ(pm: Any, packageName: String, suspended: Boolean, userId: Int): Any =
-        HiddenApiBypass.invoke(
-            pm::class.java,
-            pm,
-            "setPackagesSuspendedAsUser",
-            arrayOf(packageName),
-            suspended,
-            null,
-            null,
-            if (suspended) suspendDialogInfo else null,
-            callerPackage,
-            userId
-        )
-
-    @RequiresApi(Build.VERSION_CODES.P)
-    private fun setPackagesSuspendedAsUserSinceP(pm: Any, packageName: String, suspended: Boolean, userId: Int): Any =
-        HiddenApiBypass.invoke(
-            pm::class.java,
-            pm,
-            "setPackagesSuspendedAsUser",
-            arrayOf(packageName),
-            suspended,
-            null,
-            null,
-            null /*dialogMessage*/,
-            callerPackage,
-            userId
-        )
-
-    private val suspendDialogInfo: Any
-        @RequiresApi(Build.VERSION_CODES.Q) @SuppressLint("PrivateApi") get() = HiddenApiBypass.newInstance(
-            Class.forName("android.content.pm.SuspendDialogInfo\$Builder")
-        ).let {
-            HiddenApiBypass.invoke(it::class.java, it, "setNeutralButtonAction", 1 /*BUTTON_ACTION_UNSUSPEND*/)
-            HiddenApiBypass.invoke(it::class.java, it, "build")
-        }
-
-    @RequiresApi(Build.VERSION_CODES.P)
-    fun setAppRestricted(key: String, restricted: Boolean): Boolean = runCatching {
-        val packageName = HPackages.pkgOf(key)
-        val appops = asInterface("com.android.internal.app.IAppOpsService", Context.APP_OPS_SERVICE)
-        HiddenApiBypass.invoke(
-            appops::class.java,
-            appops,
-            "setMode",
-            HiddenApiBypass.invoke(AppOpsManager::class.java, null, "strOpToOp", "android:run_any_in_background"),
-            HPackages.packageUid(key),
-            packageName,
-            if (restricted) AppOpsManager.MODE_IGNORED else AppOpsManager.MODE_ALLOWED
-        )
-        true
-    }.getOrElse {
-        HLog.e(it)
-        false
-    }
-
-    fun uninstallApp(packageName: String): Boolean =
-        execute("pm ${if (HPackages.canUninstallNormally(packageName)) "uninstall" else "uninstall --user current"} $packageName").first == 0
-
-    fun reinstallApp(packageName: String): Boolean =
-        execute("pm install-existing --user current $packageName").first == 0
-
-    fun execute(command: String, root: Boolean = isRoot): Pair<Int, String?> = runCatching {
-        IShizukuService.Stub.asInterface(Shizuku.getBinder()).newProcess(arrayOf(if (root) "su" else "sh"), null, null)
+    fun execute(command: String): Pair<Int, String?> = runCatching {
+        IShizukuService.Stub.asInterface(Shizuku.getBinder())
+            .newProcess(arrayOf(if (isRoot) "su" else "sh"), null, null)
             .run {
                 ParcelFileDescriptor.AutoCloseOutputStream(outputStream).use {
                     it.write(command.toByteArray())
                 }
-                waitFor() to inputStream.text.ifBlank { errorStream.text }.also { destroy() }
+                waitFor() to inputStream.text().ifBlank { errorStream.text() }.also { destroy() }
             }
     }.getOrElse { 1 to it.stackTraceToString() }
 
-    private val ParcelFileDescriptor.text
-        get() = ParcelFileDescriptor.AutoCloseInputStream(this).bufferedReader().use { it.readText() }
+    private fun ParcelFileDescriptor.text(): String =
+        ParcelFileDescriptor.AutoCloseInputStream(this).bufferedReader().use { it.readText() }
 }
