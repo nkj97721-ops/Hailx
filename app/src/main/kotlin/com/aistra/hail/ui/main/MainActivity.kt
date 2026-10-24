@@ -37,7 +37,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var refresh: SwipeRefreshLayout
     private val adapter = EntryAdapter({ onTap(it) }, { onLongTap(it) })
     private var entries: List<Entry> = emptyList()
-    private var query = ""
+    private var keyword = ""
     private var busy = false
     private var searchItem: MenuItem? = null
 
@@ -99,7 +99,7 @@ class MainActivity : AppCompatActivity() {
             setOnQueryTextListener(object : SearchView.OnQueryTextListener {
                 override fun onQueryTextSubmit(q: String?): Boolean = false
                 override fun onQueryTextChange(q: String?): Boolean {
-                    query = q.orEmpty()
+                    keyword = q.orEmpty()
                     render()
                     return true
                 }
@@ -109,7 +109,7 @@ class MainActivity : AppCompatActivity() {
         search.setOnActionExpandListener(object : MenuItem.OnActionExpandListener {
             override fun onMenuItemActionExpand(item: MenuItem): Boolean = true
             override fun onMenuItemActionCollapse(item: MenuItem): Boolean {
-                query = ""
+                keyword = ""
                 render()
                 return true
             }
@@ -195,7 +195,7 @@ class MainActivity : AppCompatActivity() {
 
     /** 搜索：名称 包名 拼音 */
     private fun shown(): List<Entry> {
-        val q = query.trim()
+        val q = keyword.trim()
         if (q.isEmpty()) return entries
         val compact = q.replace(" ", "")
         return entries.filter {
