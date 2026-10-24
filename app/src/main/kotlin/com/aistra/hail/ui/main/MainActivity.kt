@@ -20,7 +20,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ItemTouchHelper
-import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
@@ -35,7 +35,7 @@ import rikka.shizuku.Shizuku
 
 class MainActivity : AppCompatActivity() {
     private lateinit var refresh: SwipeRefreshLayout
-    private val adapter = EntryAdapter({ onTap(it) }, { onLongTap(it) })
+    private val adapter = EntryAdapter { onTap(it) }
     private var entries: List<Entry> = emptyList()
     private var keyword = ""
     private var busy = false
@@ -52,9 +52,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** 右滑：加入 / 移出白名单 */
+    /** 左滑：置顶 / 取消置顶 右滑：加入 / 移出白名单 */
     private val swipeHelper = ItemTouchHelper(object : ItemTouchHelper.SimpleCallback(
-        0, ItemTouchHelper.RIGHT
+        0, ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT
     ) {
         override fun onMove(
             recyclerView: RecyclerView,
@@ -67,7 +67,9 @@ class MainActivity : AppCompatActivity() {
             if (pos == RecyclerView.NO_POSITION) return
             val e = adapter.currentList.getOrNull(pos)
             adapter.notifyItemChanged(pos)
-            if (e != null) onSwipe(e)
+            if (e != null) {
+                if (direction == ItemTouchHelper.LEFT) onSwipeLeft(e) else onSwipeRight(e)
+            }
         }
     })
 
@@ -125,7 +127,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val list = RecyclerView(this).apply {
-            layoutManager = LinearLayoutManager(this@MainActivity)
+            layoutManager = GridLayoutManager(this@MainActivity, 2)
             adapter = this@MainActivity.adapter
             clipToPadding = false
         }
@@ -252,25 +254,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun onSwipe(e: Entry) {
-        val on = Repo.toggleWhite(e.key)
-        entries = Repo.withPins(entries)
-        render()
-        toast(if (on) "已加入白名单" else "已移出白名单")
-    }
-
-    /** 长按：置顶 / 取消置顶 */
-    private fun onLongTap(e: Entry) {
+    /** 左滑：置顶 / 取消置顶 */
+    private fun onSwipeLeft(e: Entry) {
         val on = Repo.togglePin(e.key)
         entries = Repo.withPins(entries)
         render()
         toast(if (on) "已置顶" else "已取消置顶")
     }
+
+    /** 右滑：加入 / 移出白名单 */
+    private fun onSwipeRight(e: Entry) {
+        val on = Repo.toggleWhite(e.key)
+        entries = Repo.withPins(entries)
+        render()
+        toast(if (on) "已加入白名单" else "已移出白名单")
+    }
 }
 
 private class EntryAdapter(
-    private val onTap: (Entry) -> Unit,
-    private val onLong: (Entry) -> Unit
+    private val onTap: (Entry) -> Unit
 ) : ListAdapter<Entry, EntryAdapter.VH>(EntryAdapter.Diff) {
 
     class VH(val label: TextView) : RecyclerView.ViewHolder(label)
@@ -284,12 +286,12 @@ private class EntryAdapter(
         val ctx = parent.context
         val d = ctx.resources.displayMetrics.density
         val label = TextView(ctx).apply {
-            textSize = 16f
+            textSize = 15f
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER_VERTICAL
-            minHeight = (52 * d).toInt()
-            val p = (20 * d).toInt()
+            minHeight = (48 * d).toInt()
+            val p = (12 * d).toInt()
             setPadding(p, 0, p, 0)
             layoutParams = RecyclerView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -309,11 +311,6 @@ private class EntryAdapter(
         holder.label.setOnClickListener {
             val p = holder.bindingAdapterPosition
             if (p != RecyclerView.NO_POSITION) onTap(getItem(p))
-        }
-        holder.label.setOnLongClickListener {
-            val p = holder.bindingAdapterPosition
-            if (p != RecyclerView.NO_POSITION) onLong(getItem(p))
-            true
         }
     }
 }
