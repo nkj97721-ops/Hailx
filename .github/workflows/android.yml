@@ -10,7 +10,11 @@ on:
       - 'fastlane/**'
       - '.github/**'
       - '!.github/workflows/android.yml'
+      - 'patch/**'
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -24,10 +28,38 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
       - name: Build with Gradle
+        id: build
         run: |
-          ./gradlew assembleDebug
-          echo "filename=$(jq -r '.elements.[0].outputFile' app/build/outputs/apk/debug/output-metadata.json)" >> $GITHUB_ENV
+          set +e
+          ./gradlew assembleDebug --console=plain > build.log 2>&1
+          code=$?
+          tail -n 120 build.log
+          echo "code=$code" >> $GITHUB_OUTPUT
+          if [ $code -eq 0 ]; then
+            echo "filename=$(jq -r '.elements.[0].outputFile' app/build/outputs/apk/debug/output-metadata.json)" >> $GITHUB_ENV
+          fi
+          exit 0
+      - name: Save error log
+        if: steps.build.outputs.code != '0'
+        run: |
+          grep -E "^e: |What went wrong|Execution failed|error:|AAPT|Unresolved" -A3 build.log | head -n 150 > build-error.txt || true
+          echo "----- tail -----" >> build-error.txt
+          tail -n 60 build.log >> build-error.txt
+          rm -rf "$RUNNER_TEMP/lg" && mkdir "$RUNNER_TEMP/lg"
+          cp build-error.txt "$RUNNER_TEMP/lg/"
+          cd "$RUNNER_TEMP/lg"
+          git init -q
+          git checkout -q -b buildlog
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add build-error.txt
+          git commit -q -m "build log"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" buildlog
+      - name: Fail if build failed
+        if: steps.build.outputs.code != '0'
+        run: exit 1
       - name: Upload a Build Artifact
+        if: steps.build.outputs.code == '0'
         uses: actions/upload-artifact@v7.0.1
         with:
           name: ${{ env.filename }}
